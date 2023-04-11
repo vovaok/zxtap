@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <QByteArray>
+#include <QVector>
 
 #pragma pack(push,1)
 struct WAVEfmt
@@ -47,7 +48,14 @@ public:
     QVector<int> byteOffset;
 
     Block() : begin(0), end(0), bitCount(0), checksum(0) {}
-    void clear() {ba.clear(); byteOffset.clear();}
+    void clear()
+    {
+        ba.clear();
+        byteOffset.clear();
+        begin = end = 0;
+        bitCount = 0;
+        checksum = 0;
+    }
 };
 
 

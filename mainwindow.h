@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QtWidgets>
 #include <QListWidget>
+#include <QFileInfo>
 #include "wavewidget.h"
 #include "structs.h"
 
@@ -29,6 +30,8 @@ private:
 
     void openWav();
     void processWave();
+    void processPart();
+    void collectBlocks();
     void showBlock(int idx);
 
     void log(QString text);

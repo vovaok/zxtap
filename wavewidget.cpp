@@ -72,7 +72,7 @@ void WaveWidget::paintGL()
 
     painter.setPen(Qt::black);
 
-    float z = b.width() / width();
+    qreal z = b.width() / width();
     if (z < 5e-5f)
     {
         int cnt = m_bits.size();
@@ -83,7 +83,7 @@ void WaveWidget::paintGL()
             char bit = m_bits[i];
             if (bit != ' ')
             {
-                float x = i / (float)fmt.freq;
+                qreal x = i / (qreal)fmt.freq;
                 x = comb.map(QPointF(x, 0)).x();
                 painter.drawLine(x, 15, x, 35);
                 painter.drawText(x+1, 30, QString(bit));
@@ -102,7 +102,7 @@ void WaveWidget::paintGL()
             ba.append(b);
             if (b >= 0)
             {
-                float x = i / (float)fmt.freq;
+                qreal x = i / (qreal)fmt.freq;
                 x = comb.map(QPointF(x, 0)).x();
                 painter.drawLine(x, 55, x, 75);
                 if (b >= 0x20 && b < 0x80)
@@ -118,7 +118,7 @@ void WaveWidget::paintGL()
 //        QColor c = m_colors[i];
 //        if (c.rgba())
 //        {
-//            float x = i / (float)fmt.freq;
+//            qreal x = i / (qreal)fmt.freq;
 //            x = comb.map(QPointF(x, 0)).x();
 //            QColor c = m_colors[i];
 //            painter.setPen(c);
@@ -152,19 +152,19 @@ void WaveWidget::plotWave()
         int sz = m_chans[c].size();
         if (c == 0)
         {
-            setBounds(0, -32768, sz / (float)fmt.freq, 32768);
+            setBounds(0, -32768, timeByIndex(sz), 32768);
         }
 
         QString name = QString("chan%1").arg(c);
         Graph *g = graph(name);
         if (!g)
             continue;
-        float *samples = m_chans[c].data();
+        qreal *samples = m_chans[c].data();
 
         for (int i=0; i<sz; i++)
         {
-            float x = i*1.0f / fmt.freq;
-            float y = samples[i];
+            qreal x = timeByIndex(i);
+            qreal y = samples[i];
             g->addPoint(x, y);
 
 //            if (etimer.elapsed() > 100)
@@ -186,7 +186,7 @@ void WaveWidget::processWave(int begin, int end)
     m_bits.resize(cnt);
     m_bytes.resize(cnt);
     m_colors.resize(cnt);
-    float *signal = m_signal.data();
+    qreal *signal = m_signal.data();
     char *bits = m_bits.data();
     QColor *colors = m_colors.data();
 
@@ -195,44 +195,44 @@ void WaveWidget::processWave(int begin, int end)
 
     int win = fWin? fmt.freq / fWin: 1; // HPF 4000 Hz
     //        int win2 = fmt.freq / 20000;
-    //        float oldy = 0;
+    //        qreal oldy = 0;
 
     Graph *fg = graph("filter");
     Graph *proc = graph("proc");
     fg->clear();
     proc->clear();
-    float *samples = m_chans[0].data();
+    qreal *samples = m_chans[0].data();
 
     for (int i=begin; i<end; i++)
     {
-        float x = i*1.0f / fmt.freq;
-        float y = samples[i];
+        qreal x = timeByIndex(i);
+        qreal y = samples[i];
 
-        float avg = 0;
+        qreal avg = 0;
         if (i > win && i < cnt - win)
         {
             for (int k=-win; k<=win; k++)
                 avg += samples[i+k];
             avg /= (win * 2);
         }
-        //                float avg2 = 0;
+        //                qreal avg2 = 0;
         //                if (i > win2 && i < sz - win2)
         //                {
         //                    for (int k=-win2; k<=win2; k++)
         //                        avg2 += samples[i+k];
         //                    avg2 /= (win2 * 2);
         //                }
-        float y1 = y - avg;
+        qreal y1 = y - avg;
         signal[i] = y1;
 
-        //                float dy = y - oldy;
+        //                qreal dy = y - oldy;
         //                oldy = y;
 
-        //                float Ky = 0.9f;
+        //                qreal Ky = 0.9f;
         //                y1 = Ky * y1 + (1.f - Ky) * y;
-        //                float Kf = 0.5f;
+        //                qreal Kf = 0.5f;
         //                f = Kf * f + (1.0f - Kf) * y;
-        //                float yf = y1 - f;
+        //                qreal yf = y1 - f;
         fg->addPoint(x, y1);
 
 //        if (etimer.elapsed() > 100)
@@ -244,24 +244,24 @@ void WaveWidget::processWave(int begin, int end)
 
     update();
 
-    float T = 0;
+    qreal T = 0;
     char bit = ' ';
     int oldi = 0;
-//    float oldf = 0;
+//    qreal oldf = 0;
 
-    float f = 0;
+    qreal f = 0;
 
     for (int i=begin; i<end; i++)
     {
-        float x = i / (float)fmt.freq;
-        float y = signal[i];
+//        qreal x = timeByIndex(i);
+        qreal y = signal[i];
         bits[i] = ' ';
         if (y > noise)
         {
             if (f <= 0)
             {
-                T = (i - oldi) * 1000000.f / fmt.freq; // period in us
-                if (T < 400)
+                T = (i - oldi) * 1000000.0 / (qreal)fmt.freq; // period in us
+                if (T < 300)//400)
                 {
                     T = 0;
                     bit = ' ';
@@ -292,17 +292,18 @@ void WaveWidget::processWave(int begin, int end)
                 }
 
                 bits[oldi] = bit;
-                proc->addPoint(oldi / (float)fmt.freq, T);
-                proc->addPoint(i / (float)fmt.freq, T);
+                proc->addPoint(timeByIndex(oldi), T);
+                proc->addPoint(timeByIndex(i), T);
 
                 for (int j=oldi; j<i; j++)
                 {
-                    float s = signal[j];
+                    qreal s = signal[j];
                     QColor c = Qt::transparent;
                     switch (bit)
                     {
                     case 'p':
                     case 's':
+                    case 'e':
                         c = s>0? Qt::red: Qt::cyan;
                         break;
                     case '0':
@@ -340,7 +341,7 @@ void WaveWidget::processWave(int begin, int end)
         if (bit == ' ')
             continue;
 
-        float T = (i - oldi) * 1000000.f / fmt.freq; // period in us
+        qreal T = (i - oldi) * 1000000.f / fmt.freq; // period in us
         if (T > 1500)
             state = Idle;
 
@@ -350,6 +351,7 @@ void WaveWidget::processWave(int begin, int end)
             pilotCnt = 0;
             if (block.ba.size())
             {
+                block.bitCount--;
                 block.end = oldi;
                 blocks << block;
             }
@@ -387,8 +389,15 @@ void WaveWidget::processWave(int begin, int end)
             {
                 if (block.ba.size())
                 {
-                    block.bitCount--;
-                    block.end = i;
+                    if ((block.bitCount & 7) == 1)
+                    {
+                        block.bitCount--;
+                        block.end = oldi;
+                    }
+                    else
+                    {
+                        block.end = i;
+                    }
                     blocks << block;
                     block.clear();
                 }
@@ -427,9 +436,29 @@ void WaveWidget::highlightBlock(int idx)
         return;
     Block &block = blocks[idx];
 //    qDebug() << "begin" << block.begin << "end" << block.end;
-    selBegin = block.begin / (float)fmt.freq;
-    selEnd = block.end / (float)fmt.freq;
-    setXmin(selBegin);
-    setXmax(selEnd);
+    selBegin = timeByIndex(block.begin);
+    selEnd = timeByIndex(block.end);
+//    setXmin(selBegin);
+//    setXmax(selEnd);
     update();
+}
+
+void WaveWidget::showBlock(int idx)
+{
+    if (idx < 0 || idx >= blocks.size())
+        return;
+    Block &block = blocks[idx];
+    setXmin(timeByIndex(block.begin));
+    setXmax(timeByIndex(block.end));
+    update();
+}
+
+int WaveWidget::indexByTime(qreal value)
+{
+    return qBound(0, (int)lroundf(value * fmt.freq), m_signal.size());
+}
+
+qreal WaveWidget::timeByIndex(int index)
+{
+    return index / (qreal)fmt.freq;
 }

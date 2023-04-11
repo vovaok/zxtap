@@ -6,6 +6,7 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setWindowTitle("ZX tape master");
 
     m_wave = new WaveWidget();
     m_wave->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
@@ -17,7 +18,9 @@ MainWindow::MainWindow(QWidget *parent)
     QToolBar *toolbar = addToolBar("main");
     toolbar->addAction("Open WAV", this, &MainWindow::openWav);
     toolbar->addAction("Process", this, &MainWindow::processWave);
+    toolbar->addAction("Process viewport", this, &MainWindow::processPart);
 
+    toolbar->addSeparator();
     toolbar->addWidget(new QLabel("Filter freq:"));
     QLineEdit *editFreq = new QLineEdit("3300");
     editFreq->setFixedWidth(60);
@@ -56,11 +59,20 @@ MainWindow::MainWindow(QWidget *parent)
         showBlock(idx);
     });
 
+    connect(m_blockList, &QListWidget::doubleClicked, [=](const QModelIndex &index)
+    {
+        int idx = index.row();
+        m_wave->showBlock(idx);
+    });
+
+    QSplitter *splitter = new QSplitter(Qt::Horizontal);
+    splitter->addWidget(m_wave);
+    splitter->addWidget(m_blockList);
+    splitter->setStretchFactor(0, 1);
+
     QGridLayout *vlay = new QGridLayout;
     ui->centralwidget->setLayout(vlay);
-    vlay->addWidget(m_wave, 0, 0);
-    vlay->addWidget(m_blockList, 0, 1);
-    vlay->setColumnStretch(0, 1);
+    vlay->addWidget(splitter, 0, 0);
 
     QTimer *timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &MainWindow::onTimer);
@@ -83,6 +95,8 @@ void MainWindow::openWav()
     QFile file(filename);
     if (file.open(QIODevice::ReadOnly))
     {
+        setWindowTitle(QString("ZX tape master - %1").arg(QFileInfo(filename).fileName()));
+
         log("File opened");
         m_wave->reset();
 
@@ -156,6 +170,10 @@ void MainWindow::openWav()
         file.close();
         log("File closed");
     }
+    else
+    {
+        setWindowTitle(QString("ZX tape master"));
+    }
 
     log("WAV file have been read successfully");
 
@@ -166,12 +184,24 @@ void MainWindow::processWave()
 {
     m_wave->processWave(0, m_wave->m_chans[0].size());
 
+    collectBlocks();
+}
+
+void MainWindow::processPart()
+{
+    m_wave->processWave(m_wave->minX() * m_wave->fmt.freq, m_wave->maxX() * m_wave->fmt.freq);
+
+    collectBlocks();
+}
+
+void MainWindow::collectBlocks()
+{
     m_blockList->clear();
     for (Block &block: m_wave->blocks)
     {
         QByteArray ba = block.ba;
         QString s = QString("Block (length=%1)").arg(ba.size());
-        if (ba.size() == 19 && ba[0] == 0x00) // header
+        if (ba.size() == 19 && ba[0] == '\0') // header
         {
             TapHeader *hdr = reinterpret_cast<TapHeader*>(ba.data());
             QString name = QString::fromLatin1(hdr->name, 10);
