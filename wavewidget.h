@@ -30,14 +30,18 @@ public:
     void plotWave();
 
     void processWave(int begin, int end);
-    void highlightBlock(int idx);
+    void selectBlock(int idx);
     void showBlock(int idx);
+    void clearSelection();
 
     int indexByTime(qreal value);
     qreal timeByIndex(int index);
 
 protected:
     void paintGL() override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 //    void wheelEvent(QWheelEvent *e) override;
 
 private slots:

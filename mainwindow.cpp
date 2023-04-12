@@ -18,7 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
     QToolBar *toolbar = addToolBar("main");
     toolbar->addAction("Open WAV", this, &MainWindow::openWav);
     toolbar->addAction("Process", this, &MainWindow::processWave);
-    toolbar->addAction("Process viewport", this, &MainWindow::processPart);
+    toolbar->addAction("Process selection", this, &MainWindow::processSelection);
 
     toolbar->addSeparator();
     toolbar->addWidget(new QLabel("Filter freq:"));
@@ -183,15 +183,18 @@ void MainWindow::openWav()
 void MainWindow::processWave()
 {
     m_wave->processWave(0, m_wave->m_chans[0].size());
-
     collectBlocks();
 }
 
-void MainWindow::processPart()
+void MainWindow::processSelection()
 {
-    m_wave->processWave(m_wave->minX() * m_wave->fmt.freq, m_wave->maxX() * m_wave->fmt.freq);
-
-    collectBlocks();
+    int begin = m_wave->indexByTime(m_wave->selBegin);
+    int end = m_wave->indexByTime(m_wave->selEnd);
+    if (begin != end)
+    {
+        m_wave->processWave(begin, end);
+        collectBlocks();
+    }
 }
 
 void MainWindow::collectBlocks()
@@ -237,7 +240,7 @@ void MainWindow::collectBlocks()
 
 void MainWindow::showBlock(int idx)
 {
-    m_wave->highlightBlock(idx);
+    m_wave->selectBlock(idx);
 }
 
 void MainWindow::log(QString text)

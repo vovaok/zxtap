@@ -30,7 +30,7 @@ private:
 
     void openWav();
     void processWave();
-    void processPart();
+    void processSelection();
     void collectBlocks();
     void showBlock(int idx);
 

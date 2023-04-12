@@ -59,6 +59,26 @@ void WaveWidget::paintGL()
         painter.drawRect(sel);
     }
 
+    for (Block &block: blocks)
+    {
+        qreal begin = timeByIndex(block.begin);
+        qreal end = timeByIndex(block.end);
+        QRectF br = b;
+        br.setLeft(begin);
+        br.setRight(end);
+        if (br.intersects(b))
+        {
+            br = comb.mapRect(br);
+            br.setTop(15);
+            br.setBottom(75);
+            painter.setPen(QColor(128, 128, 0, 128));
+            painter.setBrush(QColor(255, 255, 0, 64));
+            painter.drawRect(br);
+            if (!block.thumb.isNull() && br.width() >= 256)
+                painter.drawImage(br.left(), 75, block.thumb);
+        }
+    }
+
     for (int i=0; i<width(); i++)
     {
         int idx = inv.map(QPointF(i, 0)).x() * fmt.freq;
@@ -127,6 +147,35 @@ void WaveWidget::paintGL()
 //    }
 
     painter.end();
+}
+
+void WaveWidget::mousePressEvent(QMouseEvent *event)
+{
+    GraphWidget::mousePressEvent(event);
+    if (event->buttons() & Qt::RightButton)
+    {
+        QMatrix4x4 T = viewTransform().inverted();
+        QPointF p = T.map(event->pos());
+        selBegin = selEnd = p.x();
+        update();
+    }
+}
+
+void WaveWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    GraphWidget::mouseMoveEvent(event);
+    if (event->buttons() & Qt::RightButton)
+    {
+        QMatrix4x4 T = viewTransform().inverted();
+        QPointF p = T.map(event->pos());
+        selEnd = p.x();
+        update();
+    }
+}
+
+void WaveWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    GraphWidget::mouseReleaseEvent(event);
 }
 
 void WaveWidget::onBoundsChange()
@@ -428,14 +477,24 @@ void WaveWidget::processWave(int begin, int end)
     }
 
     update();
+
+    for (Block &block: blocks)
+    {
+        if (block.ba.size() == 6914)
+        {
+            ZxScreen scr(block.ba.data() + 1);
+            block.thumb = scr.toImage();
+        }
+    }
+
+    update();
 }
 
-void WaveWidget::highlightBlock(int idx)
+void WaveWidget::selectBlock(int idx)
 {
     if (idx < 0 || idx >= blocks.size())
         return;
     Block &block = blocks[idx];
-//    qDebug() << "begin" << block.begin << "end" << block.end;
     selBegin = timeByIndex(block.begin);
     selEnd = timeByIndex(block.end);
 //    setXmin(selBegin);
@@ -453,9 +512,15 @@ void WaveWidget::showBlock(int idx)
     update();
 }
 
+void WaveWidget::clearSelection()
+{
+    selBegin = selEnd = 0;
+    update();
+}
+
 int WaveWidget::indexByTime(qreal value)
 {
-    return qBound(0, (int)lroundf(value * fmt.freq), m_signal.size());
+    return qBound(0, (int)lroundf(value * fmt.freq), m_chans[0].size());
 }
 
 qreal WaveWidget::timeByIndex(int index)
