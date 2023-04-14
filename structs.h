@@ -57,8 +57,9 @@ public:
     uint8_t checksum;
     QVector<int> byteOffset;
     QImage thumb;
+    bool valid;
 
-    Block() : begin(0), end(0), bitCount(0), checksum(0) {}
+    Block() : begin(0), end(0), bitCount(0), checksum(0), valid(false) {}
     void clear()
     {
         ba.clear();
@@ -66,6 +67,7 @@ public:
         begin = end = 0;
         bitCount = 0;
         checksum = 0;
+        valid = false;
     }
 };
 
@@ -125,12 +127,12 @@ private:
         switch (col)
         {
         case 0: return br? 0x00000000: 0x00000000;
-        case 1: return br? 0x00ff0000: 0x00c00000;
-        case 2: return br? 0x000000ff: 0x000000c0;
+        case 1: return br? 0x000000ff: 0x000000c0;
+        case 2: return br? 0x00ff0000: 0x00c00000;
         case 3: return br? 0x00ff00ff: 0x00c000c0;
         case 4: return br? 0x0000ff00: 0x0000c000;
-        case 5: return br? 0x00ffff00: 0x00c0c000;
-        case 6: return br? 0x0000ffff: 0x0000c0c0;
+        case 5: return br? 0x0000ffff: 0x0000c0c0;
+        case 6: return br? 0x00ffff00: 0x00c0c000;
         case 7: return br? 0x00ffffff: 0x00c0c0c0;
         }
     }

@@ -21,11 +21,14 @@ public:
 
     qreal fWin = 3300;
     qreal noise = 120;
+    int channel = 0;
 
+    float T_pilot = 1300; // average interval of pilot-tone in microseconds
     qreal selBegin = 0, selEnd = 0;
 
     void reset();
     void addSample(Sample smp);
+    Sample getSample(int index);
 
     void plotWave();
 
@@ -34,8 +37,17 @@ public:
     void showBlock(int idx);
     void clearSelection();
 
-    int indexByTime(qreal value);
-    qreal timeByIndex(int index);
+    void removeSelection();
+    void relaxSelection();
+
+    int indexByTime(qreal value) const;
+    qreal timeByIndex(int index) const;
+
+    int beginIndex() const {return indexByTime(selBegin);}
+    int endIndex() const {return indexByTime(selEnd);}
+
+    QString zxChar(uint8_t code);
+    QString zxNumber(uint8_t *data);
 
 protected:
     void paintGL() override;

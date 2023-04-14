@@ -31,9 +31,29 @@ void WaveWidget::addSample(Sample smp)
         {
         case 8: m_chans[c] << ((int8_t)(smp.data8[c] - 0x80) * 256); break;
         case 16: m_chans[c] << (smp.data16[c]); break;
-        case 32: m_chans[c] << (smp.data32[c]); break;
+        case 32: m_chans[c] << (smp.data32[c] >> 16); break;
         }
     }
+}
+
+Sample WaveWidget::getSample(int index)
+{
+    Sample smp;
+    memset(&smp, 0, sizeof(Sample));
+    if (index > 0 && index < m_chans[0].size())
+    {
+        for (int c=0; c<fmt.chan; c++)
+        {
+            float v = m_chans[c][index];
+            switch (fmt.bits)
+            {
+            case 8: smp.data8[c] = qBound(-0x80, (int)lrintf(v / 256), 0x7F) + 0x80; break;
+            case 16: smp.data16[c] = qBound(-0x7FFF, (int)lrintf(v), 0x7FFF); break;
+            case 32: smp.data32[c] = qBound(-0x7FFFFFFF, (int)lrintf(v) << 16, 0x7FFFFFFF); break;
+            }
+        }
+    }
+    return smp;
 }
 
 void WaveWidget::paintGL()
@@ -118,20 +138,35 @@ void WaveWidget::paintGL()
         for (int i=begin; i<end; i++)
         {
             int b = m_bytes[i];
-            QByteArray ba;
-            ba.append(b);
             if (b >= 0)
             {
                 qreal x = i / (qreal)fmt.freq;
                 x = comb.map(QPointF(x, 0)).x();
                 painter.drawLine(x, 55, x, 75);
-                if (b >= 0x20 && b < 0x80)
-                    painter.drawText(x+1, 70, ba);
-                else
-                    painter.drawText(x+1, 70, ba.toHex());
+                painter.drawText(x+1, 70, zxChar(b));
+//                if (b >= 0x20 && b < 0x80)
+//                    painter.drawText(x+1, 70, ba);
+//                else
+//                    painter.drawText(x+1, 70, ba.toHex());
             }
         }
     }
+
+    QRectF tr = b;
+    tr.setBottom(T_pilot * 0.9);
+    tr.setTop(T_pilot * 1.1);
+    painter.setPen(Qt::transparent);
+    painter.setBrush(QColor(255, 0, 0, 64));
+    painter.drawRect(comb.mapRect(tr));
+    tr.setBottom(T_pilot * 0.6);
+    tr.setTop(T_pilot * 0.9);
+    painter.setBrush(QColor(255, 255, 0, 64));
+    painter.drawRect(comb.mapRect(tr));
+    tr.setBottom(T_pilot * 0.2);
+    tr.setTop(T_pilot * 0.6);
+    painter.setBrush(QColor(0, 0, 255, 64));
+    painter.drawRect(comb.mapRect(tr));
+
 
 //    for (int i=0; i<m_colors.size(); i++)
 //    {
@@ -155,7 +190,7 @@ void WaveWidget::mousePressEvent(QMouseEvent *event)
     if (event->buttons() & Qt::RightButton)
     {
         QMatrix4x4 T = viewTransform().inverted();
-        QPointF p = T.map(event->pos());
+        QPointF p = T.map(QPointF(event->pos()));
         selBegin = selEnd = p.x();
         update();
     }
@@ -167,7 +202,7 @@ void WaveWidget::mouseMoveEvent(QMouseEvent *event)
     if (event->buttons() & Qt::RightButton)
     {
         QMatrix4x4 T = viewTransform().inverted();
-        QPointF p = T.map(event->pos());
+        QPointF p = T.map(QPointF(event->pos()));
         selEnd = p.x();
         update();
     }
@@ -176,6 +211,9 @@ void WaveWidget::mouseMoveEvent(QMouseEvent *event)
 void WaveWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     GraphWidget::mouseReleaseEvent(event);
+    if (selEnd < selBegin)
+        qSwap(selEnd, selBegin);
+    update();
 }
 
 void WaveWidget::onBoundsChange()
@@ -190,19 +228,16 @@ void WaveWidget::plotWave()
 {
     GraphWidget::clear();
 
-//    QElapsedTimer etimer;
-//    etimer.start();
-
     for (int c=0; c<4; c++)
     {
         if (m_chans[c].isEmpty())
             continue;
 
         int sz = m_chans[c].size();
-        if (c == 0)
-        {
-            setBounds(0, -32768, timeByIndex(sz), 32768);
-        }
+//        if (c == 0)
+//        {
+//            setBounds(0, -32768, timeByIndex(sz), 32768);
+//        }
 
         QString name = QString("chan%1").arg(c);
         Graph *g = graph(name);
@@ -215,22 +250,21 @@ void WaveWidget::plotWave()
             qreal x = timeByIndex(i);
             qreal y = samples[i];
             g->addPoint(x, y);
-
-//            if (etimer.elapsed() > 100)
-//            {
-//                qApp->processEvents();
-//                etimer.restart();
-//            }
         }
     }
 }
 
 void WaveWidget::processWave(int begin, int end)
 {
-    if (m_chans[0].isEmpty())
+    if (channel < 0 || channel >= 4)
         return;
 
-    int cnt = m_chans[0].size();
+    QVector<qreal> &chan = m_chans[channel];
+
+    if (chan.isEmpty())
+        return;
+
+    int cnt = chan.size();
     m_signal.resize(cnt);
     m_bits.resize(cnt);
     m_bytes.resize(cnt);
@@ -250,7 +284,7 @@ void WaveWidget::processWave(int begin, int end)
     Graph *proc = graph("proc");
     fg->clear();
     proc->clear();
-    qreal *samples = m_chans[0].data();
+    qreal *samples = chan.data();
 
     for (int i=begin; i<end; i++)
     {
@@ -299,45 +333,78 @@ void WaveWidget::processWave(int begin, int end)
 //    qreal oldf = 0;
 
     qreal f = 0;
+    T_pilot = 1300; // average interval of pilot-tone in microseconds
+    // T_one = 0.8 * T_pilot
+    // T_zero = 0.4 * T_pilot
+
+    int bitcnt = 0;
 
     for (int i=begin; i<end; i++)
     {
 //        qreal x = timeByIndex(i);
         qreal y = signal[i];
         bits[i] = ' ';
+
         if (y > noise)
         {
             if (f <= 0)
             {
                 T = (i - oldi) * 1000000.0 / (qreal)fmt.freq; // period in us
-                if (T < 300)//400)
+                if (T < T_pilot * 0.3)//300 //400)
                 {
-                    T = 0;
-                    bit = ' ';
+                    continue;
+//                    T = 0;
+//                    bit = ' ';
                 }
-                if (T < 750)
+                else if (T < T_pilot * 0.6)
                 {
                     if (bit == 'p')
                         bit = 's';
-                    else if (bit != ' ')
+                    else //if (bit != ' ')
+                    {
                         bit = '0';
+                        bitcnt++;
+                    }
                 }
-                else if (T < 1100)
+                else if (T < T_pilot * 0.9)
                 {
-                    if (bit != ' ')
+                    //if (bit != ' ')
                         bit = '1';
+                    bitcnt++;
                 }
-                else if (T < 1500)
+                else if (T < T_pilot * 1.1)
                 {
                     bit = 'p';
+                    T_pilot = T_pilot * 0.99 + T * 0.01;
+                    bitcnt = 0;
                 }
                 else
                 {
                     T = 0;
-                    if (bit == '0' || bit == '1')
-                        bit = 'e';
+                    if ((bit == '0' || bit == '1') && bitcnt >= 8)
+                    {
+                        if (samples[oldi] > 0)
+                        {
+                            bit = 'e';
+                        }
+                        else
+                        {
+                            bit = ' ';
+                            for (int j=i-1; j; --j)
+                            {
+                                colors[j] = signal[j]>0? Qt::red: Qt::cyan;
+                                if (bits[j] != ' ')
+                                {
+                                    bits[j] = 'e';
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     else
                         bit = ' ';
+//                    T_pilot = 1300; // reset pilot-tone interval
+                    bitcnt = 0;
                 }
 
                 bits[oldi] = bit;
@@ -392,7 +459,10 @@ void WaveWidget::processWave(int begin, int end)
 
         qreal T = (i - oldi) * 1000000.f / fmt.freq; // period in us
         if (T > 1500)
+        {
+            bit = ' ';
             state = Idle;
+        }
 
         switch (state)
         {
@@ -412,11 +482,50 @@ void WaveWidget::processWave(int begin, int end)
                 state = Pilot;
 //                qDebug() << "Pilot";
             }
+            else if (bit == 'e')
+            {
+                qDebug() << "unsdelano data";
+                // backwards parsing...
+                int oldj = i - 1;
+                int bitcount = 0;
+                int bti = i;
+                for (int j=oldj; j; --j)
+                {
+                    qreal T = (oldj - j) * 1000000.f / fmt.freq; // period in us
+                    if (T > 1500 || bits[j] == 'p' || bits[j] == 's' || bits[j] == 'e')
+                    {
+                        qDebug() << "bits" << bitcount;
+                        if (bitcount >= 40)
+                        {
+                            oldi = i = bti - 1;
+                            state = Data;
+                            break;
+                        }
+                        else
+                        {
+                            oldi = i;
+                            break;
+                        }
+                    }
+                    if (bits[j] == ' ')
+                        continue;
+                    bitcount++;
+                    if (!(bitcount & 7))
+                    {
+                        bti = j;
+                    }
+                    oldj = j;
+                }
+                continue;
+            }
             break;
 
         case Pilot:
             if (bit == 's' && pilotCnt > 20)
+            {
                 state = Data;
+                block.valid = true;
+            }
             else if (bit == 'p')
                 pilotCnt++;
             else
@@ -438,15 +547,15 @@ void WaveWidget::processWave(int begin, int end)
             {
                 if (block.ba.size())
                 {
-                    if ((block.bitCount & 7) == 1)
-                    {
-                        block.bitCount--;
-                        block.end = oldi;
-                    }
-                    else
-                    {
+//                    if ((block.bitCount & 7) == 1)
+//                    {
+//                        block.bitCount--;
+//                        block.end = oldi;
+//                    }
+//                    else
+//                    {
                         block.end = i;
-                    }
+//                    }
                     blocks << block;
                     block.clear();
                 }
@@ -518,12 +627,345 @@ void WaveWidget::clearSelection()
     update();
 }
 
-int WaveWidget::indexByTime(qreal value)
+void WaveWidget::removeSelection()
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    for (int c=0; c<4; c++)
+    {
+        if (end > m_chans[c].size())
+            continue;
+        m_chans[c].remove(begin, end - begin);
+    }
+
+    plotWave();
+    update();
+}
+
+void WaveWidget::relaxSelection()
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    qreal win = end - begin;
+    for (int c=0; c<4; c++)
+    {
+        auto &chan = m_chans[c];
+        if (chan.isEmpty())
+            continue;
+        int cnt = chan.size();
+        qreal *samples = chan.data();
+        QVector<qreal> newSamples;
+        for (int i=begin; i<=end; i++)
+        {
+            qreal s1 = samples[begin] * (end - i) / win;
+            qreal s2 = samples[end] * (i - begin) / win;
+            qreal s = s1 + s2;
+            newSamples << s;
+        }
+
+        cnt = newSamples.size();
+        for (int i=0; i<cnt; i++)
+        {
+            samples[i+begin] = newSamples[i];
+        }
+    }
+
+    plotWave();
+    update();
+}
+
+int WaveWidget::indexByTime(qreal value) const
 {
     return qBound(0, (int)lroundf(value * fmt.freq), m_chans[0].size());
 }
 
-qreal WaveWidget::timeByIndex(int index)
+qreal WaveWidget::timeByIndex(int index) const
 {
     return index / (qreal)fmt.freq;
+}
+
+QString WaveWidget::zxChar(uint8_t code)
+{
+    switch (code)
+    {
+    case 0x06: return "<comma>";
+    case 0x08: return "<left>";
+    case 0x09: return "<right>";
+    case 0x0d: return "<enter>";
+    case 0x0e: return "<number>";
+    case 0x10: return "<INK>";
+    case 0x11: return "<PAPER>";
+    case 0x12: return "<FLASH>";
+    case 0x13: return "<BRIGHT>";
+    case 0x14: return "<INVERSE>";
+    case 0x15: return "<OVER>";
+    case 0x16: return "<AT>";
+    case 0x17: return "<TAB>";
+    case 0x20: return " ";
+    case 0x21: return "!";
+    case 0x22: return "\"";
+    case 0x23: return "#";
+    case 0x24: return "$";
+    case 0x25: return "%";
+    case 0x26: return "&";
+    case 0x27: return "'";
+    case 0x28: return "(";
+    case 0x29: return ")";
+    case 0x2a: return "*";
+    case 0x2b: return "+";
+    case 0x2c: return ",";
+    case 0x2d: return "-";
+    case 0x2e: return ".";
+    case 0x2f: return "/";
+    case 0x30: return "0";
+    case 0x31: return "1";
+    case 0x32: return "2";
+    case 0x33: return "3";
+    case 0x34: return "4";
+    case 0x35: return "5";
+    case 0x36: return "6";
+    case 0x37: return "7";
+    case 0x38: return "8";
+    case 0x39: return "9";
+    case 0x3a: return ":";
+    case 0x3b: return ";";
+    case 0x3c: return "<";
+    case 0x3d: return "=";
+    case 0x3e: return ">";
+    case 0x3f: return "?";
+    case 0x40: return "@";
+    case 0x41: return "A";
+    case 0x42: return "B";
+    case 0x43: return "C";
+    case 0x44: return "D";
+    case 0x45: return "E";
+    case 0x46: return "F";
+    case 0x47: return "G";
+    case 0x48: return "H";
+    case 0x49: return "I";
+    case 0x4a: return "J";
+    case 0x4b: return "K";
+    case 0x4c: return "L";
+    case 0x4d: return "M";
+    case 0x4e: return "N";
+    case 0x4f: return "O";
+    case 0x50: return "P";
+    case 0x51: return "Q";
+    case 0x52: return "R";
+    case 0x53: return "S";
+    case 0x54: return "T";
+    case 0x55: return "U";
+    case 0x56: return "V";
+    case 0x57: return "W";
+    case 0x58: return "X";
+    case 0x59: return "Y";
+    case 0x5a: return "Z";
+    case 0x5b: return "[";
+    case 0x5c: return "\\";
+    case 0x5d: return "]";
+    case 0x5e: return "↑";
+    case 0x5f: return "_";
+    case 0x60: return "£";
+    case 0x61: return "a";
+    case 0x62: return "b";
+    case 0x63: return "c";
+    case 0x64: return "d";
+    case 0x65: return "e";
+    case 0x66: return "f";
+    case 0x67: return "g";
+    case 0x68: return "h";
+    case 0x69: return "i";
+    case 0x6a: return "j";
+    case 0x6b: return "k";
+    case 0x6c: return "l";
+    case 0x6d: return "m";
+    case 0x6e: return "n";
+    case 0x6f: return "o";
+    case 0x70: return "p";
+    case 0x71: return "q";
+    case 0x72: return "r";
+    case 0x73: return "s";
+    case 0x74: return "t";
+    case 0x75: return "u";
+    case 0x76: return "v";
+    case 0x77: return "w";
+    case 0x78: return "x";
+    case 0x79: return "y";
+    case 0x7a: return "z";
+    case 0x7b: return "{";
+    case 0x7c: return "|";
+    case 0x7d: return "}";
+    case 0x7e: return "~";
+    case 0x7f: return "©";
+    case 0x80: return " ";
+    case 0x81: return "▝";
+    case 0x82: return "▘";
+    case 0x83: return "▀";
+    case 0x84: return "▗";
+    case 0x85: return "▐";
+    case 0x86: return "▚";
+    case 0x87: return "▜";
+    case 0x88: return "▖";
+    case 0x89: return "▞";
+    case 0x8a: return "▌";
+    case 0x8b: return "▛";
+    case 0x8c: return "▄";
+    case 0x8d: return "▟";
+    case 0x8e: return "▙";
+    case 0x8f: return "█";
+    case 0x90: return "A";
+    case 0x91: return "B";
+    case 0x92: return "C";
+    case 0x93: return "D";
+    case 0x94: return "E";
+    case 0x95: return "F";
+    case 0x96: return "G";
+    case 0x97: return "H";
+    case 0x98: return "I";
+    case 0x99: return "J";
+    case 0x9a: return "K";
+    case 0x9b: return "L";
+    case 0x9c: return "M";
+    case 0x9d: return "N";
+    case 0x9e: return "O";
+    case 0x9f: return "P";
+    case 0xa0: return "Q";
+    case 0xa1: return "R";
+    case 0xa2: return "S";
+    case 0xa3: return "T";
+    case 0xa4: return "U";
+//    case 0x90: return "🄰";
+//    case 0x91: return "🄱";
+//    case 0x92: return "🄲";
+//    case 0x93: return "🄳";
+//    case 0x94: return "🄴";
+//    case 0x95: return "🄵";
+//    case 0x96: return "🄶";
+//    case 0x97: return "🄷";
+//    case 0x98: return "🄸";
+//    case 0x99: return "🄹";
+//    case 0x9a: return "🄺";
+//    case 0x9b: return "🄻";
+//    case 0x9c: return "🄼";
+//    case 0x9d: return "🄽";
+//    case 0x9e: return "🄾";
+//    case 0x9f: return "🄿";
+//    case 0xa0: return "🅀";
+//    case 0xa1: return "🅁";
+//    case 0xa2: return "🅂";
+//    case 0xa3: return "🅃";
+//    case 0xa4: return "🅄";
+    case 0xa5: return "RND";
+    case 0xa6: return "INKEY$";
+    case 0xa7: return "PI";
+    case 0xa8: return "FN ";
+    case 0xa9: return "POINT ";
+    case 0xaa: return "SCREEN$ ";
+    case 0xab: return "ATTR ";
+    case 0xac: return "AT ";
+    case 0xad: return "TAB ";
+    case 0xae: return "VAL$ ";
+    case 0xaf: return "CODE ";
+    case 0xb0: return "VAL ";
+    case 0xb1: return "LEN ";
+    case 0xb2: return "SIN ";
+    case 0xb3: return "COS ";
+    case 0xb4: return "TAN ";
+    case 0xb5: return "ASN ";
+    case 0xb6: return "ACS ";
+    case 0xb7: return "ATN ";
+    case 0xb8: return "LN ";
+    case 0xb9: return "EXP ";
+    case 0xba: return "INT ";
+    case 0xbb: return "SQR ";
+    case 0xbc: return "SGN ";
+    case 0xbd: return "ABS ";
+    case 0xbe: return "PEEK ";
+    case 0xbf: return "IN ";
+    case 0xc0: return "USR ";
+    case 0xc1: return "STR$ ";
+    case 0xc2: return "CHR$ ";
+    case 0xc3: return "NOT ";
+    case 0xc4: return "BIN ";
+    case 0xc5: return " OR ";
+    case 0xc6: return " AND ";
+    case 0xc7: return "<=";
+    case 0xc8: return ">=";
+    case 0xc9: return "<>";
+    case 0xca: return " LINE ";
+    case 0xcb: return " THEN ";
+    case 0xcc: return " TO ";
+    case 0xcd: return " STEP ";
+    case 0xce: return " DEF FN ";
+    case 0xcf: return " CAT ";
+    case 0xd0: return " FORMAT ";
+    case 0xd1: return " MOVE ";
+    case 0xd2: return " ERASE ";
+    case 0xd3: return " OPEN # ";
+    case 0xd4: return " CLOSE # ";
+    case 0xd5: return " MERGE ";
+    case 0xd6: return " VERIFY ";
+    case 0xd7: return " BEEP ";
+    case 0xd8: return " CIRCLE ";
+    case 0xd9: return " INK ";
+    case 0xda: return " PAPER ";
+    case 0xdb: return " FLASH ";
+    case 0xdc: return " BRIGHT ";
+    case 0xdd: return " INVERSE ";
+    case 0xde: return " OVER ";
+    case 0xdf: return " OUT ";
+    case 0xe0: return " LPRINT ";
+    case 0xe1: return " LLIST ";
+    case 0xe2: return " STOP ";
+    case 0xe3: return " READ ";
+    case 0xe4: return " DATA ";
+    case 0xe5: return " RESTORE ";
+    case 0xe6: return " NEW ";
+    case 0xe7: return " BORDER ";
+    case 0xe8: return " CONTINUE ";
+    case 0xe9: return " DIM ";
+    case 0xea: return " REM ";
+    case 0xeb: return " FOR ";
+    case 0xec: return " GO TO ";
+    case 0xed: return " GO SUB ";
+    case 0xee: return " INPUT ";
+    case 0xef: return " LOAD ";
+    case 0xf0: return " LIST ";
+    case 0xf1: return " LET ";
+    case 0xf2: return " PAUSE ";
+    case 0xf3: return " NEXT ";
+    case 0xf4: return " POKE ";
+    case 0xf5: return " PRINT ";
+    case 0xf6: return " PLOT ";
+    case 0xf7: return " RUN ";
+    case 0xf8: return " SAVE ";
+    case 0xf9: return " RANDOMIZE ";
+    case 0xfa: return " IF ";
+    case 0xfb: return " CLS ";
+    case 0xfc: return " DRAW ";
+    case 0xfd: return " CLEAR ";
+    case 0xfe: return " RETURN ";
+    case 0xff: return " COPY ";
+    default: return QByteArray(reinterpret_cast<const char*>(&code), 1).toHex();
+    }
+}
+
+QString WaveWidget::zxNumber(uint8_t *data)
+{
+    if (!data[0]) // this is small integer
+    {
+        int value = *reinterpret_cast<uint16_t*>(data + 2);
+        if (data[1] == 0xFF)
+            value = -value;
+        return QString::number(value);
+    }
+    else // this is 40-bit float
+    {
+        int e = (int)data[0] - 128;
+        uint32_t im = *reinterpret_cast<uint32_t*>(data + 1);
+        qreal sign = im & 0x80000000? -1.0: 1.0;
+        im |= 0x80000000;
+        qreal value = sign * (im / (qreal)(1LL << 32)) * (1 << e);
+        return QString::number(value);
+    }
 }

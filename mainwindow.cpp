@@ -14,11 +14,26 @@ MainWindow::MainWindow(QWidget *parent)
     m_wave->setMinimumSize(600, 200);
 //    m_wave->setBackColor(Qt::transparent);
 
+    QPushButton *saveTapBtn = new QPushButton("Save TAP");
+    connect(saveTapBtn, &QPushButton::clicked, this, &MainWindow::saveTap);
 
     QToolBar *toolbar = addToolBar("main");
     toolbar->addAction("Open WAV", this, &MainWindow::openWav);
+    toolbar->addAction("Save WAV", this, &MainWindow::saveSelection);
     toolbar->addAction("Process", this, &MainWindow::processWave);
     toolbar->addAction("Process selection", this, &MainWindow::processSelection);
+    toolbar->addAction("Remove selection", m_wave, &WaveWidget::removeSelection);
+    toolbar->addAction("Relax selection", m_wave, &WaveWidget::relaxSelection);
+
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Channel:"));
+    QSpinBox *boxChan = new QSpinBox();
+    toolbar->addWidget(boxChan);
+    boxChan->setRange(0, 3);
+    connect(boxChan, QOverload<int>::of(&QSpinBox::valueChanged), [=](int value)
+    {
+        m_wave->channel = value;
+    });
 
     toolbar->addSeparator();
     toolbar->addWidget(new QLabel("Filter freq:"));
@@ -51,6 +66,9 @@ MainWindow::MainWindow(QWidget *parent)
             editNoise->setText(QString::number(lrintf(m_wave->noise)));
     });
 
+    toolbar->addSeparator();
+    toolbar->addAction("Parse program", this, &MainWindow::parseProgram);
+
 
     m_blockList = new QListWidget;
     connect(m_blockList, &QListWidget::clicked, [=](const QModelIndex &index)
@@ -58,16 +76,22 @@ MainWindow::MainWindow(QWidget *parent)
         int idx = index.row();
         showBlock(idx);
     });
-
     connect(m_blockList, &QListWidget::doubleClicked, [=](const QModelIndex &index)
     {
         int idx = index.row();
         m_wave->showBlock(idx);
     });
 
+    QWidget *blockWidget = new QWidget;
+    QVBoxLayout *blocklay = new QVBoxLayout;
+    blocklay->setContentsMargins(0, 0, 0, 0);
+    blockWidget->setLayout(blocklay);
+    blocklay->addWidget(m_blockList);
+    blocklay->addWidget(saveTapBtn);
+
     QSplitter *splitter = new QSplitter(Qt::Horizontal);
     splitter->addWidget(m_wave);
-    splitter->addWidget(m_blockList);
+    splitter->addWidget(blockWidget);
     splitter->setStretchFactor(0, 1);
 
     QGridLayout *vlay = new QGridLayout;
@@ -91,6 +115,7 @@ void MainWindow::onTimer()
 
 void MainWindow::openWav()
 {
+    int wlen = 0;
     QString filename = QFileDialog::getOpenFileName(0L, "Open WAV file", QString(), "*.wav");
     QFile file(filename);
     if (file.open(QIODevice::ReadOnly))
@@ -138,7 +163,7 @@ void MainWindow::openWav()
                     file.read(reinterpret_cast<char*>(&datalen), 4);
                     if (fmt.type == 0x01)
                     {
-                        int wlen = datalen / fmt.bytes;
+                        wlen = datalen / fmt.bytes;
                         log(QString("Sample count = %1").arg(wlen));
                         Sample smp;
                         for (int i=0; i<wlen; i++)
@@ -178,6 +203,47 @@ void MainWindow::openWav()
     log("WAV file have been read successfully");
 
     m_wave->plotWave();
+    if (wlen)
+        m_wave->setBounds(0, -32768, m_wave->timeByIndex(wlen), 32768);
+    m_wave->update();
+}
+
+void MainWindow::saveSelection()
+{
+    int begin = m_wave->beginIndex();
+    int end = m_wave->endIndex();
+    int wlen = end - begin;
+    if (wlen <= 0)
+    {
+        QMessageBox::information(0L, "Save selection", "Nothing selected!");
+        return;
+    }
+
+    QString filename = QFileDialog::getSaveFileName(0L, "Save WAV file", QString(), "*.wav");
+    if (filename.isEmpty())
+        return;
+    QFile file(filename);
+    if (file.open(QIODevice::WriteOnly))
+    {
+        int sampleSize = m_wave->fmt.bytes;
+        uint32_t fmtlen = sizeof(WAVEfmt);
+        uint32_t datalen = wlen * sampleSize;
+        uint32_t rifflen = fmtlen + datalen + 12;
+        file.write("RIFF", 4);
+        file.write(reinterpret_cast<const char *>(&rifflen), 4);
+        file.write("WAVE", 4);
+        file.write("fmt ", 4);
+        file.write(reinterpret_cast<const char *>(&fmtlen), 4);
+        file.write(reinterpret_cast<const char *>(&m_wave->fmt), fmtlen);
+        file.write("data", 4);
+        file.write(reinterpret_cast<const char *>(&datalen), 4);
+        for (int i=begin; i<end; i++)
+        {
+            Sample smp = m_wave->getSample(i);
+            file.write(reinterpret_cast<const char *>(&smp), sampleSize);
+        }
+        file.close();
+    }
 }
 
 void MainWindow::processWave()
@@ -203,11 +269,15 @@ void MainWindow::collectBlocks()
     for (Block &block: m_wave->blocks)
     {
         QByteArray ba = block.ba;
-        QString s = QString("Block (length=%1)").arg(ba.size());
-        if (ba.size() == 19 && ba[0] == '\0') // header
+        QString s = "Block";
+        if (!block.valid)
+            s = "Data";
+        s += QString(" (length=%1)").arg(ba.size());
+        QString name = "";
+        if (ba[0] == '\0' && ba.size() >= 19) // header
         {
             TapHeader *hdr = reinterpret_cast<TapHeader*>(ba.data());
-            QString name = QString::fromLatin1(hdr->name, 10);
+            name = QString::fromLatin1(hdr->name, 10);
             switch (hdr->fileType)
             {
             case 0x00:
@@ -226,6 +296,9 @@ void MainWindow::collectBlocks()
                 s = QString("Bytes: %1 (%2:%3)").arg(name).arg(hdr->param).arg(hdr->dataLength);
                 break;
             }
+
+            if (ba.size() != 19)
+                s += " [non-standard]";
         }
         if (block.bitCount & 7)
         {
@@ -235,12 +308,88 @@ void MainWindow::collectBlocks()
         if (block.checksum)
             s += " [bad CRC]";
         m_blockList->addItem(s);
+        m_blockList->item(m_blockList->count() - 1)->setData(Qt::UserRole, name);
     }
 }
 
 void MainWindow::showBlock(int idx)
 {
     m_wave->selectBlock(idx);
+}
+
+void MainWindow::saveTap()
+{
+    if (m_wave->blocks.isEmpty())
+    {
+        QMessageBox::information(0L, "Save TAP", "No blocks to save");
+        return;
+    }
+
+    QString name = m_blockList->item(0)->data(Qt::UserRole).toString();
+    QString filename = QFileDialog::getSaveFileName(0L, "Save TAP file", name, "*.TAP");
+    if (filename.isEmpty())
+        return;
+    QFile file(filename);
+    if (file.open(QIODevice::WriteOnly))
+    {
+        for (Block &block: m_wave->blocks)
+        {
+            uint16_t length = block.ba.size();
+            file.write(reinterpret_cast<const char *>(&length), 2);
+            file.write(block.ba);
+        }
+        file.close();
+    }
+}
+
+void MainWindow::parseProgram()
+{
+    QStringList list;
+    int idx = m_blockList->currentRow();
+    if (idx >= 0 && idx < m_wave->blocks.size())
+    {
+        Block &block = m_wave->blocks[idx];
+        char *ptr = block.ba.data() + 1; // skip byte meaning type of the block
+        char *end = ptr + block.ba.size() - 2; // chop CRC byte
+        QString line;
+        while (ptr < end)
+        {
+            uint16_t lineNumber = ((uint8_t)ptr[0] << 8) | (uint8_t)ptr[1];
+            ptr += 2;
+            uint16_t length = ((uint8_t)ptr[0] << 8) | (uint8_t)ptr[1];
+            ptr += 2;
+
+            line = QString().sprintf("% 4d", lineNumber);
+
+            for (int i=0; /*i<length &&*/ ptr < end; i++)
+            {
+//                QString tkn;
+                uint8_t chr = *ptr++;
+                if (chr == 0x0d) // enter
+                    break;
+                else if (chr == 0x0e) // number
+                {
+                    ptr += 5;
+//                    tkn = m_wave->zxNumber(ptr);
+                }
+                else if (chr >= 0x20)
+                {
+                    line += m_wave->zxChar(chr);
+                }
+            }
+
+            list << line;
+        }
+
+    }
+
+    QPlainTextEdit *edit = new QPlainTextEdit(this);
+    edit->setWindowFlags(Qt::Tool);
+    QFont font("Consolas", 8);
+    edit->setFont(font);
+    for (QString &line: list)
+        edit->appendPlainText(line);
+    edit->show();
 }
 
 void MainWindow::log(QString text)
