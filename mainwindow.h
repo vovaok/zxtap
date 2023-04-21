@@ -29,7 +29,10 @@ private:
     void onTimer();
 
     void openWav();
+    void openTap();
+    void saveWav();
     void saveSelection();
+    void saveInterval(int begin, int end);
     void processWave();
     void processSelection();
     void collectBlocks();

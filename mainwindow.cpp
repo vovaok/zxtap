@@ -14,32 +14,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_wave->setMinimumSize(600, 200);
 //    m_wave->setBackColor(Qt::transparent);
 
-    QPushButton *saveTapBtn = new QPushButton("Save TAP");
-    connect(saveTapBtn, &QPushButton::clicked, this, &MainWindow::saveTap);
-
-    QToolBar *toolbar = addToolBar("main");
-    toolbar->addAction("Open WAV", this, &MainWindow::openWav);
-    toolbar->addAction("Save WAV", this, &MainWindow::saveSelection);
-    toolbar->addAction("Process", this, &MainWindow::processWave);
-    toolbar->addAction("Process selection", this, &MainWindow::processSelection);
-    toolbar->addAction("Remove selection", m_wave, &WaveWidget::removeSelection);
-    toolbar->addAction("Relax selection", m_wave, &WaveWidget::relaxSelection);
-
-    toolbar->addSeparator();
-    toolbar->addWidget(new QLabel("Channel:"));
     QSpinBox *boxChan = new QSpinBox();
-    toolbar->addWidget(boxChan);
     boxChan->setRange(0, 3);
     connect(boxChan, QOverload<int>::of(&QSpinBox::valueChanged), [=](int value)
     {
         m_wave->channel = value;
     });
 
-    toolbar->addSeparator();
-    toolbar->addWidget(new QLabel("Filter freq:"));
     QLineEdit *editFreq = new QLineEdit("3300");
     editFreq->setFixedWidth(60);
-    toolbar->addWidget(editFreq);
     connect(editFreq, &QLineEdit::editingFinished, [=]()
     {
         bool ok;
@@ -51,10 +34,8 @@ MainWindow::MainWindow(QWidget *parent)
             editFreq->setText(QString::number(lrintf(m_wave->fWin)));
     });
 
-    toolbar->addWidget(new QLabel("Noise:"));
     QLineEdit *editNoise = new QLineEdit("120");
     editNoise->setFixedWidth(60);
-    toolbar->addWidget(editNoise);
     connect(editNoise, &QLineEdit::editingFinished, [=]()
     {
         bool ok;
@@ -66,9 +47,46 @@ MainWindow::MainWindow(QWidget *parent)
             editNoise->setText(QString::number(lrintf(m_wave->noise)));
     });
 
-    toolbar->addSeparator();
-    toolbar->addAction("Parse program", this, &MainWindow::parseProgram);
+    QPushButton *saveTapBtn = new QPushButton("Save TAP");
+    connect(saveTapBtn, &QPushButton::clicked, this, &MainWindow::saveTap);
 
+    QPushButton *parseProgBtn = new QPushButton("Parse program");
+    connect(parseProgBtn, &QPushButton::clicked, this, &MainWindow::parseProgram);
+
+    QToolBar *toolbar = addToolBar("main");
+    toolbar->addAction("Open WAV", this, &MainWindow::openWav);
+    toolbar->addAction("Save WAV", this, &MainWindow::saveWav);
+    toolbar->addAction("Save selection", this, &MainWindow::saveSelection);
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Channel:"));
+    toolbar->addWidget(boxChan);
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Filter freq:"));
+    toolbar->addWidget(editFreq);
+    toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("Noise:"));
+    toolbar->addWidget(editNoise);
+    toolbar->addSeparator();
+    toolbar->addAction("Process", this, &MainWindow::processWave);
+    toolbar->addAction("Process selection", this, &MainWindow::processSelection);
+    toolbar->addSeparator();
+    toolbar->addAction("Open TAP", this, &MainWindow::openTap);
+
+    addToolBarBreak();
+    toolbar = addToolBar("Edit");
+    toolbar->addAction("Remove selection", m_wave, &WaveWidget::removeSelection);
+    toolbar->addAction("Relax selection", m_wave, &WaveWidget::relaxSelection);
+    toolbar->addAction("LPF selection", m_wave, &WaveWidget::lpfSelection);
+    toolbar->addAction("Filter selection", m_wave, &WaveWidget::filterSelection);
+    toolbar->addAction("Gain selection", [=]()
+    {
+        m_wave->gainSelection(2.0);
+    });
+    toolbar->addAction("Swap channels", m_wave, &WaveWidget::swapChannels);
+    toolbar->addAction("Draw sync grid", m_wave, &WaveWidget::syncGrid);
+
+//    toolbar->addSeparator();
+//    toolbar->addAction("Parse program", this, &MainWindow::parseProgram);
 
     m_blockList = new QListWidget;
     connect(m_blockList, &QListWidget::clicked, [=](const QModelIndex &index)
@@ -87,6 +105,7 @@ MainWindow::MainWindow(QWidget *parent)
     blocklay->setContentsMargins(0, 0, 0, 0);
     blockWidget->setLayout(blocklay);
     blocklay->addWidget(m_blockList);
+    blocklay->addWidget(parseProgBtn);
     blocklay->addWidget(saveTapBtn);
 
     QSplitter *splitter = new QSplitter(Qt::Horizontal);
@@ -203,15 +222,75 @@ void MainWindow::openWav()
     log("WAV file have been read successfully");
 
     m_wave->plotWave();
-    if (wlen)
-        m_wave->setBounds(0, -32768, m_wave->timeByIndex(wlen), 32768);
-    m_wave->update();
+    m_wave->showEntireWave();
+//    if (wlen)
+//        m_wave->setBounds(0, -32768, m_wave->timeByIndex(wlen), 32768);
+//    m_wave->update();
+}
+
+void MainWindow::openTap()
+{
+    QString filename = QFileDialog::getOpenFileName(0L, "Open TAP file", QString(), "*.TAP");
+    QFile file(filename);
+    if (file.open(QIODevice::ReadOnly))
+    {
+        setWindowTitle(QString("ZX tape master - %1").arg(QFileInfo(filename).fileName()));
+
+        QByteArray ba = file.readAll();
+        char *ptr = ba.data();
+        char *end = ptr + ba.size();
+        file.close();
+
+        log("File opened");
+        m_wave->reset();
+        m_wave->fmt.type = 0x01;
+        m_wave->fmt.freq = 44100;
+        m_wave->fmt.chan = 1;
+        m_wave->fmt.bits = 16;
+        m_wave->fmt.bytes = 2;
+        m_wave->fmt.bps = m_wave->fmt.freq * m_wave->fmt.bytes;
+
+        while (ptr < end)
+        {
+            uint16_t len = *reinterpret_cast<uint16_t*>(ptr);
+            ptr += 2;
+
+            log(QString("Block (len=%1)").arg(len));
+
+            int pilotCount = 1500;
+            if (len == 19)
+                pilotCount = 3000;
+            for (int i=0; i<pilotCount; i++)
+                m_wave->generateBit('p');
+            m_wave->generateBit('s');
+            for (int i=0; i<len; i++)
+            {
+                uint8_t b = *ptr++;
+                for (uint8_t mask=0x80; mask; mask>>=1)
+                    m_wave->generateBit(b & mask? '1': '0');
+            }
+            m_wave->generateBit('e');
+            m_wave->generateSilence(1.0);
+        }
+    }
+    m_wave->plotWave();
+    m_wave->showEntireWave();
+    qApp->processEvents();
+    processWave();
+}
+
+void MainWindow::saveWav()
+{
+    saveInterval(0, m_wave->lastIndex());
 }
 
 void MainWindow::saveSelection()
 {
-    int begin = m_wave->beginIndex();
-    int end = m_wave->endIndex();
+    saveInterval(m_wave->beginIndex(), m_wave->endIndex());
+}
+
+void MainWindow::saveInterval(int begin, int end)
+{
     int wlen = end - begin;
     if (wlen <= 0)
     {
@@ -306,7 +385,10 @@ void MainWindow::collectBlocks()
 //            qDebug() << "bitCount" << block.bitCount;
         }
         if (block.checksum)
+        {
             s += " [bad CRC]";
+            qDebug() << "Block" << s << "CRC =" << block.checksum;
+        }
         m_blockList->addItem(s);
         m_blockList->item(m_blockList->count() - 1)->setData(Qt::UserRole, name);
     }

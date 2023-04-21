@@ -11,6 +11,8 @@ WaveWidget::WaveWidget()
     addGraph("filter", Qt::black);
     addGraph("proc", Qt::cyan);
 
+    setFocusPolicy(Qt::ClickFocus);
+
     connect(this, &GraphWidget::boundsChanged, this, &WaveWidget::onBoundsChange);
 }
 
@@ -167,6 +169,27 @@ void WaveWidget::paintGL()
     painter.setBrush(QColor(0, 0, 255, 64));
     painter.drawRect(comb.mapRect(tr));
 
+    if (syncT && z < 5e-5f)
+    {
+        painter.setPen(Qt::black);
+        for (qreal t=syncOffset; t<b.right(); t+=syncT)
+        {
+            if (t < b.left())
+                continue;
+            QPointF p1(t, -10000);
+            QPointF p2(t, 10000);
+            painter.drawLine(comb.map(p1), comb.map(p2));
+        }
+        for (qreal t=syncOffset; t>b.left(); t-=syncT)
+        {
+            if (t > b.right())
+                continue;
+            QPointF p1(t, -10000);
+            QPointF p2(t, 10000);
+            painter.drawLine(comb.map(p1), comb.map(p2));
+        }
+    }
+
 
 //    for (int i=0; i<m_colors.size(); i++)
 //    {
@@ -216,6 +239,113 @@ void WaveWidget::mouseReleaseEvent(QMouseEvent *event)
     update();
 }
 
+void WaveWidget::keyPressEvent(QKeyEvent *event)
+{
+    GraphWidget::keyPressEvent(event);
+
+    int begin = beginIndex();
+    int end = endIndex();
+    int len = end - begin;
+
+    if (event->modifiers() & Qt::ControlModifier)
+    {
+
+        if (event->key() == Qt::Key_X)
+        {
+            for (int i=0; i<4; i++)
+            {
+                if (!m_chans[i].isEmpty())
+                {
+                    m_clipboard[i] = m_chans[i].mid(begin, len);
+                    m_chans[i].remove(begin, end);
+                }
+                else
+                    m_clipboard[i].clear();
+            }
+            selEnd = selBegin;
+        }
+        else if (event->key() == Qt::Key_C)
+        {
+            for (int i=0; i<4; i++)
+            {
+                if (!m_chans[i].isEmpty())
+                    m_clipboard[i] = m_chans[i].mid(begin, len);
+                else
+                    m_clipboard[i].clear();
+            }
+        }
+        else if (event->key() == Qt::Key_V)
+        {
+            bool insert = false;
+            if (event->modifiers() & Qt::ShiftModifier)
+                insert = true;
+            int len = m_clipboard[0].size();
+            for (int i=0; i<4; i++)
+            {
+                if (!m_clipboard[i].isEmpty())
+                {
+                    int len = m_clipboard[i].size();
+                    for (int j=0; j<len; j++)
+                    {
+                        if (j >= m_clipboard[i].size())
+                            break;
+                        if (insert)
+                            m_chans[i].insert(j + begin, m_clipboard[i][j]);
+                        else
+                            m_chans[i][j + begin] = m_clipboard[i][j];
+                    }
+                }
+            }
+            selEnd = selBegin + timeByIndex(len);
+        }
+        else
+        {
+            return;
+        }
+        plotWave();
+        update();
+    }
+    else if (event->key() == Qt::Key_Delete)
+    {
+        removeSelection();
+    }
+    else if (event->key() == Qt::Key_0)
+    {
+        if (begin >= 0 && begin < lastIndex())
+        {
+            int end = begin + indexByTime((T_pilot * 0.4) * 1e-6);
+            for (int i=begin; i<end && m_bits[i]==' '; i++)
+                m_colors[i] = m_signal[i] > 0? Qt::yellow: Qt::blue;
+            m_bits[begin] = '0';
+        }
+        collectBytes(0, lastIndex());
+    }
+    else if (event->key() == Qt::Key_1)
+    {
+        if (begin >= 0 && begin < lastIndex())
+        {
+            int end = begin + indexByTime((T_pilot * 0.8) * 1e-6);
+            for (int i=begin; i<end && m_bits[i]==' '; i++)
+                m_colors[i] = m_signal[i] > 0? Qt::yellow: Qt::blue;
+            m_bits[begin] = '1';
+        }
+        collectBytes(0, lastIndex());
+    }
+    else if (event->key() == Qt::Key_Space)
+    {
+        if (begin >= 0 && begin < lastIndex())
+        {
+            int idx = begin;
+            for (idx=begin; idx<end && m_bits[idx]==' '; idx++);
+            m_bits[idx] = ' ';
+
+            for (int i=begin; i<lastIndex() && m_bits[i]==' '; i++)
+                m_colors[i] = Qt::transparent;
+        }
+        collectBytes(0, lastIndex());
+    }
+}
+
 void WaveWidget::onBoundsChange()
 {
     QRectF b = bounds();
@@ -259,6 +389,17 @@ void WaveWidget::processWave(int begin, int end)
     if (channel < 0 || channel >= 4)
         return;
 
+    filterWave(begin, end);
+
+    analyseBits(begin, end);
+
+    collectBytes(begin, end);
+
+    drawScreenData();
+}
+
+void WaveWidget::filterWave(int begin, int end)
+{
     QVector<qreal> &chan = m_chans[channel];
 
     if (chan.isEmpty())
@@ -270,8 +411,6 @@ void WaveWidget::processWave(int begin, int end)
     m_bytes.resize(cnt);
     m_colors.resize(cnt);
     qreal *signal = m_signal.data();
-    char *bits = m_bits.data();
-    QColor *colors = m_colors.data();
 
     begin = qMax(begin, 0);
     end = qMin(end, cnt);
@@ -281,9 +420,7 @@ void WaveWidget::processWave(int begin, int end)
     //        qreal oldy = 0;
 
     Graph *fg = graph("filter");
-    Graph *proc = graph("proc");
     fg->clear();
-    proc->clear();
     qreal *samples = chan.data();
 
     for (int i=begin; i<end; i++)
@@ -318,19 +455,31 @@ void WaveWidget::processWave(int begin, int end)
         //                qreal yf = y1 - f;
         fg->addPoint(x, y1);
 
-//        if (etimer.elapsed() > 100)
-//        {
-//            qApp->processEvents();
-//            etimer.restart();
-//        }
+        //        if (etimer.elapsed() > 100)
+        //        {
+        //            qApp->processEvents();
+        //            etimer.restart();
+        //        }
     }
 
     update();
+}
+
+void WaveWidget::analyseBits(int begin, int end)
+{
+    QVector<qreal> &chan = m_chans[channel];
+    qreal *samples = chan.data();
+    qreal *signal = m_signal.data();
+    char *bits = m_bits.data();
+    QColor *colors = m_colors.data();
+
+    Graph *proc = graph("proc");
+    proc->clear();
 
     qreal T = 0;
     char bit = ' ';
     int oldi = 0;
-//    qreal oldf = 0;
+    //    qreal oldf = 0;
 
     qreal f = 0;
     T_pilot = 1300; // average interval of pilot-tone in microseconds
@@ -341,7 +490,7 @@ void WaveWidget::processWave(int begin, int end)
 
     for (int i=begin; i<end; i++)
     {
-//        qreal x = timeByIndex(i);
+        //        qreal x = timeByIndex(i);
         qreal y = signal[i];
         bits[i] = ' ';
 
@@ -353,8 +502,8 @@ void WaveWidget::processWave(int begin, int end)
                 if (T < T_pilot * 0.3)//300 //400)
                 {
                     continue;
-//                    T = 0;
-//                    bit = ' ';
+                    //                    T = 0;
+                    //                    bit = ' ';
                 }
                 else if (T < T_pilot * 0.6)
                 {
@@ -369,7 +518,7 @@ void WaveWidget::processWave(int begin, int end)
                 else if (T < T_pilot * 0.9)
                 {
                     //if (bit != ' ')
-                        bit = '1';
+                    bit = '1';
                     bitcnt++;
                 }
                 else if (T < T_pilot * 1.1)
@@ -403,7 +552,7 @@ void WaveWidget::processWave(int begin, int end)
                     }
                     else
                         bit = ' ';
-//                    T_pilot = 1300; // reset pilot-tone interval
+                    //                    T_pilot = 1300; // reset pilot-tone interval
                     bitcnt = 0;
                 }
 
@@ -436,18 +585,22 @@ void WaveWidget::processWave(int begin, int end)
         }
         if (y < -noise)
             f = -10000;
-//        proc->addPoint(x, f);
+        //        proc->addPoint(x, f);
     }
 
     update();
+}
 
+void WaveWidget::collectBytes(int begin, int end)
+{
     blocks.clear();
+    char *bits = m_bits.data();
 
     Block block;
     uint8_t byte = 0;
     uint8_t mask = 0x80;
     int pilotCnt = 0;
-    oldi = 0;
+    int oldi = 0;
     enum {Idle, Pilot, Data} state = Idle;
     for (int i=begin; i<end; i++)
     {
@@ -480,11 +633,11 @@ void WaveWidget::processWave(int begin, int end)
             if (bit == 'p')
             {
                 state = Pilot;
-//                qDebug() << "Pilot";
+                //                qDebug() << "Pilot";
             }
             else if (bit == 'e')
             {
-                qDebug() << "unsdelano data";
+                //                qDebug() << "unsdelano data";
                 // backwards parsing...
                 int oldj = i - 1;
                 int bitcount = 0;
@@ -494,7 +647,7 @@ void WaveWidget::processWave(int begin, int end)
                     qreal T = (oldj - j) * 1000000.f / fmt.freq; // period in us
                     if (T > 1500 || bits[j] == 'p' || bits[j] == 's' || bits[j] == 'e')
                     {
-                        qDebug() << "bits" << bitcount;
+                        //                        qDebug() << "bits" << bitcount;
                         if (bitcount >= 40)
                         {
                             oldi = i = bti - 1;
@@ -547,15 +700,15 @@ void WaveWidget::processWave(int begin, int end)
             {
                 if (block.ba.size())
                 {
-//                    if ((block.bitCount & 7) == 1)
-//                    {
-//                        block.bitCount--;
-//                        block.end = oldi;
-//                    }
-//                    else
-//                    {
-                        block.end = i;
-//                    }
+                    //                    if ((block.bitCount & 7) == 1)
+                    //                    {
+                    //                        block.bitCount--;
+                    //                        block.end = oldi;
+                    //                    }
+                    //                    else
+                    //                    {
+                    block.end = i;
+                    //                    }
                     blocks << block;
                     block.clear();
                 }
@@ -572,7 +725,7 @@ void WaveWidget::processWave(int begin, int end)
 
             if (!mask)
             {
-//                qDebug() << "Byte: " << std::hex << byte;
+                //                qDebug() << "Byte: " << std::hex << byte;
                 block.ba.append(byte);
                 int bo = block.byteOffset.last();
                 m_bytes[bo] = byte;
@@ -586,7 +739,10 @@ void WaveWidget::processWave(int begin, int end)
     }
 
     update();
+}
 
+void WaveWidget::drawScreenData()
+{
     for (Block &block: blocks)
     {
         if (block.ba.size() == 6914)
@@ -595,7 +751,6 @@ void WaveWidget::processWave(int begin, int end)
             block.thumb = scr.toImage();
         }
     }
-
     update();
 }
 
@@ -608,6 +763,15 @@ void WaveWidget::selectBlock(int idx)
     selEnd = timeByIndex(block.end);
 //    setXmin(selBegin);
 //    setXmax(selEnd);
+    update();
+}
+
+void WaveWidget::showEntireWave()
+{
+//    qreal lim = 1 << (fmt.bits - 1);
+    qreal lim = 32768;
+    qreal end = timeByIndex(m_chans[0].size());
+    setBounds(0, -lim, end, lim);
     update();
 }
 
@@ -637,6 +801,8 @@ void WaveWidget::removeSelection()
             continue;
         m_chans[c].remove(begin, end - begin);
     }
+
+    selEnd = selBegin;
 
     plotWave();
     update();
@@ -672,6 +838,182 @@ void WaveWidget::relaxSelection()
 
     plotWave();
     update();
+}
+
+void WaveWidget::filterSelection()
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    for (int i=begin; i<end; i++)
+    {
+        m_chans[channel][i] = m_signal[i];
+    }
+    plotWave();
+    update();
+}
+
+void WaveWidget::lpfSelection()
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    qreal win = 4;
+    for (int c=0; c<4; c++)
+    {
+        auto &chan = m_chans[c];
+        if (chan.isEmpty())
+            continue;
+        int cnt = chan.size();
+        qreal *samples = chan.data();
+        QVector<qreal> newSamples;
+
+        for (int i=begin; i<end; i++)
+        {
+            qreal v = 0;
+            for (int j=-win; j<=win; j++)
+                v += samples[i+j];
+            v /= win * 2 + 1;
+            newSamples << v;
+        }
+
+        cnt = newSamples.size();
+        for (int i=0; i<cnt; i++)
+        {
+            samples[i+begin] = newSamples[i];
+        }
+    }
+
+    plotWave();
+    update();
+}
+
+void WaveWidget::gainSelection(qreal value)
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    for (int c=0; c<4; c++)
+    {
+        if (m_chans[c].size() < end)
+            continue;
+        for (int i=begin; i<end; i++)
+        {
+            m_chans[c][i] *= value;
+        }
+    }
+    plotWave();
+    update();
+}
+
+void WaveWidget::swapChannels()
+{
+    int begin = beginIndex();
+    int end = endIndex();
+    for (int i=begin; i<end; i++)
+    {
+        qSwap(m_chans[0][i], m_chans[1][i]);
+    }
+    plotWave();
+    update();
+}
+
+void WaveWidget::syncGrid()
+{
+    setGridColor(QColor(0, 0, 0, 32));
+    int begin = indexByTime(bounds().left());
+    int end = indexByTime(bounds().right());
+    qDebug() << begin<<end;
+    qreal T0 = 0;//T_pilot * 0.4;
+    int Tcnt = 0;
+    qreal f = 0;
+    syncOffset = 0;
+    int oldi = begin;
+    for (int i=begin; i<end; i++)
+    {
+        if (i<0 || i>= m_signal.size())
+            continue;
+
+        qreal y = m_signal[i];
+
+        if (y > noise)
+        {
+            if (f < 0)
+            {
+                float T = (i - oldi) * 1000000.0 / (qreal)fmt.freq; // period in us
+                if (T < 0.3 * T_pilot)
+                    continue;
+                else if (T < 0.6 * T_pilot)
+                {
+                    T0 += T;
+//                    qDebug() << T;
+                    Tcnt++;
+                    if (!syncOffset)
+                        syncOffset = timeByIndex(i);
+                }
+                else if (T < 0.9 * T_pilot)
+                {
+//                    qDebug() << T;
+                    T0 += T/2;
+                    Tcnt++;
+                }
+                oldi = i;
+            }
+            f = 10000;
+        }
+        else if (y < -noise)
+        {
+            f = -10000;
+        }
+    }
+
+    if (Tcnt)
+    {
+        T0 /= Tcnt;
+        T0 = 476.19;
+        syncT = T0 * 1e-6;
+        qDebug() << "syncT =" << syncT << "syncOffset =" << syncOffset;
+    }
+
+    update();
+}
+
+void WaveWidget::generateBit(char bit)
+{
+    qreal T = 0;
+    switch (bit)
+    {
+    case 'p': T = T_pilot; break;
+    case 's': T = T_pilot * 0.3; break;
+    case '0': T = T_pilot * 0.4; break;
+    case '1': T = T_pilot * 0.8; break;
+    case 'e': T = T_pilot; break;
+    default: return;
+    }
+
+    QVector<qreal> &chan = m_chans[channel];
+
+    int wlen = indexByTime(T * 1e-6);
+    if (wlen)
+    {
+        qreal mag = 1 << (fmt.bits - 2);
+        for (int i=0; i<wlen; i++)
+        {
+            qreal value = mag * sin(i*2*M_PI/wlen);
+            chan << value;
+        }
+    }
+    else // place silence
+    {
+        for (int i=0; i<10000; i++)
+            m_chans[0] << 0.0;
+    }
+
+}
+
+void WaveWidget::generateSilence(qreal time)
+{
+    QVector<qreal> &chan = m_chans[channel];
+    int wlen = indexByTime(time);
+    for (int i=0; i<wlen; i++)
+        chan << 0.0;
 }
 
 int WaveWidget::indexByTime(qreal value) const
